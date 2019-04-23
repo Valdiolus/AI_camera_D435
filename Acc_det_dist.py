@@ -5,6 +5,9 @@ import numpy as np
 import imutils
 import time
 import cv2
+import math
+
+from sort_master.sort import *
 
 RPI = 0
 RSD = 0
@@ -18,7 +21,7 @@ if(TPU != 0):
 	from edgetpu.detection.engine import DetectionEngine
 	from PIL import Image
 
-accuracy = 0.4
+accuracy = 0.3
 
 
 def USB_ONBOARD_CAMERA_init(ch):
@@ -120,6 +123,11 @@ def RUN_CPU_CAFFE_MnetSSD(frame_int, net, CLASSES, COLORS):
 	net.setInput(blob)
 	detections = net.forward()
 
+	#tracker array
+	tracker_obj=0
+	tracker_box_int = np.zeros([1,5])#track max 4 objects for example
+
+
 	# loop over the detections
 	for i in np.arange(0, detections.shape[2]):
 		# extract the confidence (i.e., probability) associated with
@@ -136,6 +144,13 @@ def RUN_CPU_CAFFE_MnetSSD(frame_int, net, CLASSES, COLORS):
 			box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
 			(startX, startY, endX, endY) = box.astype("int")
 
+			#add to tracker
+			if tracker_obj > 0:
+				tracker_box_int = np.append([tracker_box_int[0]], [np.append(box, confidence)], axis=0).astype("int")
+			else:
+				tracker_obj+=1
+				tracker_box_int[0:5] = (startX, startY, endX, endY, confidence)
+
 			# draw the prediction on the frame
 			label = "{}: {:.2f}%".format(CLASSES[idx],
 										 confidence * 100)
@@ -143,9 +158,9 @@ def RUN_CPU_CAFFE_MnetSSD(frame_int, net, CLASSES, COLORS):
 						  COLORS[idx], 2)
 			y = startY - 15 if startY - 15 > 15 else startY + 15
 			cv2.putText(frame_int, label, (startX, y),
-						cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLORS[idx], 2)
+						cv2.FONT_HERSHEY_SIMPLEX, 0.6, COLORS[idx], 1)
 
-	return frame_int
+	return frame_int, tracker_box_int
 
 def RUN_TPU_TF_MnetSSD(frame_int, engine_int, labels_tf_int):
 	#defs
@@ -186,7 +201,7 @@ def RUN_TPU_TF_MnetSSD(frame_int, engine_int, labels_tf_int):
 			label_bottom = label_top + label_size[1]
 			cv2.rectangle(frame_int, (label_left - 1, label_top - 1), (label_right + 1, label_bottom + 1),
 						  label_background_color, -1)
-			cv2.putText(frame_int, label_text, (label_left, label_bottom), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+			cv2.putText(frame_int, label_text, (label_left, label_bottom), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
 						label_text_color, 1)
 	return frame_int
 
@@ -194,6 +209,7 @@ def FRAME_SHOW(frame_int, fps_int):
 	# calc and add fps rate
 	cv2.putText(frame_int, fps_int, (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (38, 0, 255), 1, cv2.LINE_AA)
 	# show the output frame
+	frame_int = cv2.resize(frame_int, None, fx=3, fy=3, interpolation = cv2.INTER_CUBIC)
 	cv2.imshow("Frame", frame_int)
 
 def FPS_CHECK(stp, fps_int, framecount_int, elapsedTime_int, t1_int, t2_int):
@@ -212,6 +228,20 @@ def FPS_CHECK(stp, fps_int, framecount_int, elapsedTime_int, t1_int, t2_int):
 			elapsedTime_int = 0
 
 	return fps_int, framecount_int, elapsedTime_int, t1_int, t2_int
+
+def Tracker_sort(mot_tracker_int, detections, frame_int, COLORS_int):
+	#run tracker
+	track_bbs_ids = mot_tracker_int.update(detections).astype("int")
+
+	#show this tracking obects
+	for i in np.arange(0, track_bbs_ids.shape[0]):
+		if track_bbs_ids[i, 0] > 0 and track_bbs_ids[i, 1] > 0:
+			#print(track_bbs_ids[i, 4])
+			(startX, startY, endX, endY, number) = track_bbs_ids[i]
+			x = startX - 15 if startX - 15 > 15 else startX + 15
+			cv2.putText(frame_int, str(number), (x, startY), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 128, 0),2)
+
+	return frame_int
 
 def MAIN():
 	width = 300
@@ -232,6 +262,9 @@ def MAIN():
 	pipeline = 0
 	engine = 0
 	labels_tf = 0
+
+	mot_tracker = Sort()
+	tracker_box=0
 
 	if RSD == 0:
 		stream = USB_ONBOARD_CAMERA_init(0)
@@ -258,11 +291,26 @@ def MAIN():
 		else:
 			frame, color_image, depth_image = RS_D435_get(pipeline)
 
+		#hold time
+		t11 = time.perf_counter()
+		print("t11", t11-t1)
+
 		#FORWARD NN RUN
 		if TPU == 0:
-			frame = RUN_CPU_CAFFE_MnetSSD(frame, net, classes, colors)
+			frame, tracker_box = RUN_CPU_CAFFE_MnetSSD(frame, net, classes, colors)
 		else:
 			frame = RUN_TPU_TF_MnetSSD(frame, engine, labels_tf)
+
+		#hold time
+		t12 = time.perf_counter()
+		print("t12", t12-t11)
+
+		#tracker
+		frame = Tracker_sort(mot_tracker, tracker_box, frame, colors)
+
+		#hold time
+		t13 = time.perf_counter()
+		print("t13", t13-t12)
 
 		#add text and show image on the screen
 		FRAME_SHOW(frame, fps)
