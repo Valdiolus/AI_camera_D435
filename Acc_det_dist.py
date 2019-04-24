@@ -12,6 +12,7 @@ from sort_master.sort import *
 RPI = 0
 RSD = 0
 TPU = 0
+VIDEO = 0
 
 if(RSD != 0):
 	#UNCOMMENT AFTER PASTE
@@ -36,6 +37,18 @@ def USB_ONBOARD_CAMERA_get(stream_int):
 	# grab the frame from the threaded video stream and resize it
 	# to have a maximum width of 400 pixels
 	frame_int = stream_int.read()
+	frame_int = imutils.resize(frame_int, width=500)
+	return frame_int
+
+def VIDEO_init(file):
+	vs = cv2.VideoCapture(file)
+	if (vs.isOpened() == False):
+		print("Error opening video stream or file")
+	time.sleep(0.5)
+	return vs
+
+def VIDEO_get(stream_int):
+	ret, frame_int = stream_int.read()
 	frame_int = imutils.resize(frame_int, width=400)
 	return frame_int
 
@@ -263,14 +276,18 @@ def MAIN():
 	engine = 0
 	labels_tf = 0
 
+	#tracker
 	mot_tracker = Sort()
 	tracker_box=0
 
-	if RSD == 0:
-		stream = USB_ONBOARD_CAMERA_init(0)
+	if(VIDEO == 0):
+		if RSD == 0:
+			stream = USB_ONBOARD_CAMERA_init(0)
+		else:
+			pipeline = rs.pipeline()
+			RS_D435_init(pipeline)
 	else:
-		pipeline = rs.pipeline()
-		RS_D435_init(pipeline)
+		stream = VIDEO_init('video_examples/5.mp4')
 
 	if TPU == 0:
 		net, classes, colors = LOAD_CPU_CAFFE_MnetSSD()
@@ -285,11 +302,16 @@ def MAIN():
 		# inc FPS
 		fps, framecount, elapsedTime, t1, t2 = FPS_CHECK (1, fps, framecount, elapsedTime, t1, t2)
 
-		#Get image
-		if RSD == 0:
-			frame = USB_ONBOARD_CAMERA_get(stream)
+		# Get image
+		if(VIDEO == 0):
+			if RSD == 0:
+				frame = USB_ONBOARD_CAMERA_get(stream)
+			else:
+				frame, color_image, depth_image = RS_D435_get(pipeline)
 		else:
-			frame, color_image, depth_image = RS_D435_get(pipeline)
+			frame = VIDEO_get(stream)
+			if frame is None:
+				break
 
 		#hold time
 		t11 = time.perf_counter()
@@ -319,14 +341,21 @@ def MAIN():
 		if (cv2.waitKey(1) & 0xFF) == ord("q"):
 			break
 
+		#hold time
+		t14 = time.perf_counter()
+		print("t14", t14-t13)
+
 		# update the FPS counter
 		fps, framecount, elapsedTime, t1, t2 = FPS_CHECK (2, fps, framecount, elapsedTime, t1, t2)
 
 	# do a bit of cleanup
 	cv2.destroyAllWindows()
-	if (RSD == 0):
-		stream.stop()
+	if(VIDEO == 0):
+		if (RSD == 0):
+			stream.stop()
+		else:
+			pipeline.stop()
 	else:
-		pipeline.stop()
+		stream.release()
 
 MAIN()
