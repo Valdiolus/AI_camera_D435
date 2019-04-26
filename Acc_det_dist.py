@@ -7,12 +7,26 @@ import time
 import cv2
 import math
 
-from sort_master.sort import *
+# initialize a dictionary that maps strings to their corresponding
+# OpenCV object tracker implementations
+OPENCV_OBJECT_TRACKERS = {
+	"csrt": cv2.TrackerCSRT_create,
+	"kcf": cv2.TrackerKCF_create,
+	"boosting": cv2.TrackerBoosting_create,
+	"mil": cv2.TrackerMIL_create,
+	"tld": cv2.TrackerTLD_create,
+	"medianflow": cv2.TrackerMedianFlow_create,
+	"mosse": cv2.TrackerMOSSE_create
+}
+
+# initialize OpenCV's special multi-object tracker
+#trackers = cv2.MultiTracker_create()
 
 RPI = 0
 RSD = 0
 TPU = 0
 VIDEO = 0
+TRACKER = 0
 
 if(RSD != 0):
 	#UNCOMMENT AFTER PASTE
@@ -22,8 +36,14 @@ if(TPU != 0):
 	from edgetpu.detection.engine import DetectionEngine
 	from PIL import Image
 
+if(RPI == 1):
+	from picamera.array import PiRGBArray
+	from picamera import PiCamera
+
 accuracy = 0.3
 
+if(TRACKER != 0):
+	from sort_master.sort import *
 
 def USB_ONBOARD_CAMERA_init(ch):
 	# initialize the video stream, allow the cammera sensor to warmup,
@@ -37,8 +57,20 @@ def USB_ONBOARD_CAMERA_get(stream_int):
 	# grab the frame from the threaded video stream and resize it
 	# to have a maximum width of 400 pixels
 	frame_int = stream_int.read()
-	frame_int = imutils.resize(frame_int, width=500)
+	#frame_int = imutils.resize(frame_int, width=400)
 	return frame_int
+
+def RPI_CAMERA_init(res, fr):
+	camera = PiCamera()
+	camera.resolution = res
+	camera.framerate = fr
+	rawCapture = PiRGBArray(camera, size=res)
+	time.sleep(0.1)
+	return camera
+
+def RPI_CAMERA_get(stream_int, output_int):
+	stream_int.capture(output_int, 'rgb')
+	return output_int
 
 def VIDEO_init(file):
 	vs = cv2.VideoCapture(file)
@@ -49,7 +81,7 @@ def VIDEO_init(file):
 
 def VIDEO_get(stream_int):
 	ret, frame_int = stream_int.read()
-	frame_int = imutils.resize(frame_int, width=400)
+	#frame_int = imutils.resize(frame_int, width=400)
 	return frame_int
 
 def RS_D435_init(pipeline_int):
@@ -124,7 +156,7 @@ def LOAD_TPU_TF_MnetSSD(type, engine_int, labels_tf_int):
 
 	return engine_int, labels_tf_int
 
-def RUN_CPU_CAFFE_MnetSSD(frame_int, net, CLASSES, COLORS):
+def RUN_CPU_CAFFE_MnetSSD(frame_int, net, CLASSES, COLORS, tracked_int):
 
 	# grab the frame dimensions and convert it to a blob
 	(h, w) = frame_int.shape[:2]
@@ -157,12 +189,22 @@ def RUN_CPU_CAFFE_MnetSSD(frame_int, net, CLASSES, COLORS):
 			box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
 			(startX, startY, endX, endY) = box.astype("int")
 
-			#add to tracker
-			if tracker_obj > 0:
-				tracker_box_int = np.append([tracker_box_int[0]], [np.append(box, confidence)], axis=0).astype("int")
-			else:
-				tracker_obj+=1
-				tracker_box_int[0:5] = (startX, startY, endX, endY, confidence)
+			if(TRACKER != 0):
+				#add to tracker
+				if tracker_obj > 0:
+					tracker_box_int = np.append([tracker_box_int[0]], [np.append(box, confidence)], axis=0).astype("int")
+				else:
+					tracker_obj+=1
+					tracker_box_int[0:5] = (startX, startY, endX, endY, confidence)
+
+			#if(confidence>0.6):
+			#	if(tracked_int<10):
+			#		tracked_int+=1
+			#	if(tracked_int == 10):
+			#		print("TRACKED CAPTURED!!!!!!!!!!")
+			#		tracked_int+=1
+			#		tracker = cv2.TrackerKCF_create()
+			#		tracker.init(frame_int, (startX, startY, endX, endY))
 
 			# draw the prediction on the frame
 			label = "{}: {:.2f}%".format(CLASSES[idx],
@@ -173,7 +215,7 @@ def RUN_CPU_CAFFE_MnetSSD(frame_int, net, CLASSES, COLORS):
 			cv2.putText(frame_int, label, (startX, y),
 						cv2.FONT_HERSHEY_SIMPLEX, 0.6, COLORS[idx], 1)
 
-	return frame_int, tracker_box_int
+	return frame_int, tracker_box_int, tracked_int
 
 def RUN_TPU_TF_MnetSSD(frame_int, engine_int, labels_tf_int):
 	#defs
@@ -222,7 +264,7 @@ def FRAME_SHOW(frame_int, fps_int):
 	# calc and add fps rate
 	cv2.putText(frame_int, fps_int, (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (38, 0, 255), 1, cv2.LINE_AA)
 	# show the output frame
-	frame_int = cv2.resize(frame_int, None, fx=3, fy=3, interpolation = cv2.INTER_CUBIC)
+	frame_int = cv2.resize(frame_int, None, fx=1, fy=1, interpolation = cv2.INTER_CUBIC)#x2 image
 	cv2.imshow("Frame", frame_int)
 
 def FPS_CHECK(stp, fps_int, framecount_int, elapsedTime_int, t1_int, t2_int):
@@ -256,6 +298,17 @@ def Tracker_sort(mot_tracker_int, detections, frame_int, COLORS_int):
 
 	return frame_int
 
+def Trackers_opencv_update(frame_int):
+	(success_int, boxes_int) = trackers.update(frame_int)
+	print(success_int, boxes_int)
+
+	# loop over the bounding boxes and draw then on the frame
+	if success_int:
+		(x, y, w, h) = [int(v) for v in boxes_int]
+		cv2.rectangle(frame_int, (x, y), (x + w, y + h), (0, 0, 255), 2)
+
+	return success_int, boxes_int
+
 def MAIN():
 	width = 300
 	height = 300
@@ -276,18 +329,27 @@ def MAIN():
 	engine = 0
 	labels_tf = 0
 
+	#PIcamera
+	if(RPI != 0):
+		output = np.empty((480, 640, 3), dtype=np.uint8)
+
 	#tracker
-	mot_tracker = Sort()
+	if(TRACKER != 0):
+		mot_tracker = Sort()
 	tracker_box=0
+	tracked=0
 
 	if(VIDEO == 0):
-		if RSD == 0:
-			stream = USB_ONBOARD_CAMERA_init(0)
+		if RPI == 1:
+			RPI_CAMERA_init((640, 480), 16)
 		else:
-			pipeline = rs.pipeline()
-			RS_D435_init(pipeline)
+			if RSD == 0:
+				stream = USB_ONBOARD_CAMERA_init(0)
+			else:
+				pipeline = rs.pipeline()
+				RS_D435_init(pipeline)
 	else:
-		stream = VIDEO_init('video_examples/5.mp4')
+		stream = VIDEO_init('video_examples/3.mp4')
 
 	if TPU == 0:
 		net, classes, colors = LOAD_CPU_CAFFE_MnetSSD()
@@ -304,10 +366,13 @@ def MAIN():
 
 		# Get image
 		if(VIDEO == 0):
-			if RSD == 0:
-				frame = USB_ONBOARD_CAMERA_get(stream)
+			if RPI == 1:
+				frame = RPI_CAMERA_get(stream, output)
 			else:
-				frame, color_image, depth_image = RS_D435_get(pipeline)
+				if RSD == 0:
+					frame = USB_ONBOARD_CAMERA_get(stream)
+				else:
+					frame, color_image, depth_image = RS_D435_get(pipeline)
 		else:
 			frame = VIDEO_get(stream)
 			if frame is None:
@@ -319,7 +384,7 @@ def MAIN():
 
 		#FORWARD NN RUN
 		if TPU == 0:
-			frame, tracker_box = RUN_CPU_CAFFE_MnetSSD(frame, net, classes, colors)
+			frame, tracker_box, tracked= RUN_CPU_CAFFE_MnetSSD(frame, net, classes, colors, tracked)
 		else:
 			frame = RUN_TPU_TF_MnetSSD(frame, engine, labels_tf)
 
@@ -328,7 +393,10 @@ def MAIN():
 		print("t12", t12-t11)
 
 		#tracker
-		frame = Tracker_sort(mot_tracker, tracker_box, frame, colors)
+		if(TRACKER != 0):
+			frame = Tracker_sort(mot_tracker, tracker_box, frame, colors)
+		#if(tracked>=10):
+		#	Trackers_opencv_update(frame)
 
 		#hold time
 		t13 = time.perf_counter()
