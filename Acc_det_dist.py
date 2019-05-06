@@ -21,10 +21,10 @@ OPENCV_OBJECT_TRACKERS = {
 
 
 RPI = 0
-RSD = 0
-TPU = 0
+RSD = 1
+TPU = 1
 VIDEO = 0
-TRACKER = 1
+TRACKER = 0
 
 if(RSD != 0):
 	#UNCOMMENT AFTER PASTE
@@ -192,7 +192,7 @@ def RUN_CPU_CAFFE_MnetSSD(frame_int, net, CLASSES, COLORS):
 			box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
 			(startX, startY, endX, endY) = box.astype("int")
 
-			if(TRACKER == 1):
+			if(True):#
 				#add to tracker
 				if tracker_obj > 0:
 					tracker_box_int = np.append([tracker_box_int[0]], [np.append(box, confidence)], axis=0).astype("int")
@@ -218,6 +218,10 @@ def RUN_TPU_TF_MnetSSD(frame_int, engine_int, labels_tf_int):
 	label_background_color = (125, 175, 75)
 	label_text_color = (255, 255, 255)
 	percentage = 0.0
+
+	#tracker array
+	tracker_obj=0
+	tracker_box_int = np.zeros([1,5])#track max 4 objects for example
 
 	# Run inference.
 	prepimg = frame_int[:, :, ::-1].copy()
@@ -252,7 +256,15 @@ def RUN_TPU_TF_MnetSSD(frame_int, engine_int, labels_tf_int):
 						  label_background_color, -1)
 			cv2.putText(frame_int, label_text, (label_left, label_bottom), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
 						label_text_color, 1)
-	return frame_int
+
+			if(True):#TRACKER == 1
+				#add to tracker
+				if tracker_obj > 0:
+					tracker_box_int = np.append([tracker_box_int[0]], [np.append(box[0:4], obj.score)], axis=0).astype("int")
+				else:
+					tracker_obj+=1
+					tracker_box_int[0:5] = (label_left, label_top, label_right, label_bottom, obj.score)
+	return frame_int, tracker_box_int
 
 def FRAME_SHOW(frame_int, fps_int):
 	# calc and add fps rate
@@ -375,13 +387,13 @@ def MAIN():
 	else:
 		engine=0
 		labels_tf = 0
-		engine, labels_tf = LOAD_TPU_TF_MnetSSD(1, engine, labels_tf)
+		engine, labels_tf = LOAD_TPU_TF_MnetSSD(4, engine, labels_tf)
 
 	# loop over the frames from the video stream
 	while(True):
 
 		# inc FPS
-		fps, framecount, elapsedTime, t1, t2 = FPS_CHECK (4, fps, framecount, elapsedTime, t1, t2)
+		fps, framecount, elapsedTime, t1, t2 = FPS_CHECK (1, fps, framecount, elapsedTime, t1, t2)
 
 		# Get image
 		if(VIDEO == 0):
@@ -405,7 +417,7 @@ def MAIN():
 		if TPU == 0:
 			frame, tracker_box = RUN_CPU_CAFFE_MnetSSD(frame, net, classes, colors)
 		else:
-			frame = RUN_TPU_TF_MnetSSD(frame, engine, labels_tf)
+			frame, tracker_box = RUN_TPU_TF_MnetSSD(frame, engine, labels_tf)
 
 		#hold time
 		t12 = time.perf_counter()
@@ -421,12 +433,15 @@ def MAIN():
 			else:
 				Trackers_opencv_update(tracker, frame)
 
-		#Depth calculation
-		print("Boxes:", tracker_box[0].shape)
-		for i in range(tracker_box[0].shape):
-			if(tracker_box[i] != 0):
-				meters = depth_frame.as_depth_frame().get_distance(tracker_box[i][0] + int((tracker_box[i][2] - tracker_box[i][0]) / 2),
-																   tracker_box[i][1] + int((tracker_box[i][3] - tracker_box[i][1]) / 2))
+		if(RSD):
+			#Depth calculation
+			print("Boxes:", tracker_box)
+			if(tracker_box[0][0] != 0):
+				for i in range(tracker_box.shape[0]):
+					tracker_box = tracker_box.astype('uint8')
+					distance = ((tracker_box[i][0] + int((tracker_box[i][2] - tracker_box[i][0]) / 2), tracker_box[i][1] + int((tracker_box[i][3] - tracker_box[i][1]) / 2)))
+					meters = depth_frame.as_depth_frame().get_distance(distance[0], distance[1])
+					cv2.putText(frame, " {:.2f}".format(meters)+" m", (distance[0], distance[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0, 255), 1)
 				print("Distance:", meters)
 
 		#hold time
