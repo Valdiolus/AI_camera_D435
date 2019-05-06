@@ -23,7 +23,7 @@ OPENCV_OBJECT_TRACKERS = {
 RPI = 0
 RSD = 0
 TPU = 0
-VIDEO = 1
+VIDEO = 0
 TRACKER = 1
 
 if(RSD != 0):
@@ -112,7 +112,7 @@ def RS_D435_get(pipeline_int):
 	#im = im - 127.5
 	#im = im * 0.007843
 	#im.astype(np.float32)
-	return color_image_int, color_image_int, depth_image_int #if need im or color image???
+	return color_image_int, depth_image_int, depth_frame #if need im or color image???
 
 # Function to read labels from text files.
 def ReadLabelFile(file_path):
@@ -341,6 +341,9 @@ def MAIN():
 	engine = 0
 	labels_tf = 0
 
+	#RS Depth
+	meters=0
+
 	#PIcamera
 	if(RPI != 0):
 		output = np.empty((480, 640, 3), dtype=np.uint8)
@@ -388,7 +391,7 @@ def MAIN():
 				if RSD == 0:
 					frame = USB_ONBOARD_CAMERA_get(stream)
 				else:
-					frame, color_image, depth_image = RS_D435_get(pipeline)
+					frame, depth_image, depth_frame = RS_D435_get(pipeline)
 		else:
 			frame = VIDEO_get(stream)
 			if frame is None:
@@ -417,6 +420,14 @@ def MAIN():
 				N_tracked = Tracker_opencv_init(tracker, frame, tracker_box, N_tracked)
 			else:
 				Trackers_opencv_update(tracker, frame)
+
+		#Depth calculation
+		print("Boxes:", tracker_box[0].shape)
+		for i in range(tracker_box[0].shape):
+			if(tracker_box[i] != 0):
+				meters = depth_frame.as_depth_frame().get_distance(tracker_box[i][0] + int((tracker_box[i][2] - tracker_box[i][0]) / 2),
+																   tracker_box[i][1] + int((tracker_box[i][3] - tracker_box[i][1]) / 2))
+				print("Distance:", meters)
 
 		#hold time
 		t13 = time.perf_counter()
