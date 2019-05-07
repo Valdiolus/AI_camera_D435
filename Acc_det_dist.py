@@ -21,14 +21,12 @@ OPENCV_OBJECT_TRACKERS = {
 
 
 RPI = 0
-RSD = 1
-TPU = 1
+RSD = 0
+TPU = 0
 VIDEO = 0
 TRACKER = 0
 
-if(RSD != 0):
-	#UNCOMMENT AFTER PASTE
-	import pyrealsense2 as rs
+import pyrealsense2 as rs
 
 if(TPU != 0):
 	from edgetpu.detection.engine import DetectionEngine
@@ -433,14 +431,13 @@ def MAIN():
 			else:
 				Trackers_opencv_update(tracker, frame)
 
-		if(RSD):
+		if(1):#RSD
 			#Depth calculation
 			print("Boxes:", tracker_box)
 			if(tracker_box[0][0] != 0):
 				for i in range(tracker_box.shape[0]):
-					tracker_box = tracker_box.astype('uint8')
-					distance = ((tracker_box[i][0] + int((tracker_box[i][2] - tracker_box[i][0]) / 2), tracker_box[i][1] + int((tracker_box[i][3] - tracker_box[i][1]) / 2)))
-					meters = depth_frame.as_depth_frame().get_distance(distance[0], distance[1])
+					distance = (int(tracker_box[i][0] + ((tracker_box[i][2] - tracker_box[i][0]) / 2)), int(tracker_box[i][1] + (tracker_box[i][3] - tracker_box[i][1]) / 2))
+					meters = 10.5#depth_frame.as_depth_frame().get_distance(distance[0], distance[1])
 					cv2.putText(frame, " {:.2f}".format(meters)+" m", (distance[0], distance[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0, 255), 1)
 				print("Distance:", meters)
 
