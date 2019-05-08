@@ -21,9 +21,10 @@ OPENCV_OBJECT_TRACKERS = {
 
 
 RPI = 0
-RSD = 0
+RSD = 1
 TPU = 0
 VIDEO = 0
+DEPTH_VIDEO = 0
 TRACKER = 0
 
 import pyrealsense2 as rs
@@ -68,9 +69,10 @@ def RPI_CAMERA_init(res, fr):
 	time.sleep(0.1)
 	return camera
 
-def RPI_CAMERA_get(stream_int, output_int):
-	stream_int.capture(output_int, 'rgb')
-	return output_int
+def RPI_CAMERA_get(stream_int):
+	output=0
+	stream_int.capture(output, 'rgb')
+	return output
 
 def VIDEO_init(file):
 	vs = cv2.VideoCapture(file)
@@ -139,8 +141,10 @@ def LOAD_CPU_CAFFE_MnetSSD():
 								   "MobilenetSSD_caffe/MobileNetSSD_deploy.caffemodel")
 	return net, CLASSES, COLORS
 
-def LOAD_TPU_TF_MnetSSD(type, engine_int, labels_tf_int):
+def LOAD_TPU_TF_MnetSSD(type):
 	# Initialize engine.
+	engine_int=0
+	labels_tf_int=0
 	if type == 1:
 		engine_int = DetectionEngine("MobilenetSSD_tf/mobilenet_ssd_v1_coco_quant_postprocess_edgetpu.tflite")
 		labels_tf_int = ReadLabelFile("MobilenetSSD_tf/coco_labels.txt") if "MobilenetSSD_tf/coco_labels.txt" else None
@@ -331,6 +335,88 @@ def Trackers_opencv_update(tracker_int, frame_int):
 
 	return success_int
 
+def DEPTH_CALC(box_int, frame_int):
+	if RSD or DEPTH_VIDEO:
+		# Depth calculation
+		print("Boxes:", box_int)
+		if (box_int[0][0] != 0):
+			for i in range(box_int.shape[0]):
+				distance = (int(box_int[i][0] + ((box_int[i][2] - box_int[i][0]) / 2)),
+							int(box_int[i][1] + (box_int[i][3] - box_int[i][1]) / 2))
+				meters = 10.5  # depth_frame.as_depth_frame().get_distance(distance[0], distance[1])
+				cv2.putText(frame_int, " {:.2f}".format(meters) + " m", (distance[0], distance[1]),
+							cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 1)
+			print("Distance:", meters)
+	return frame_int
+
+def VIDEO_INIT():
+	if(VIDEO == 0):
+		if RPI == 1:
+			stream_int = RPI_CAMERA_init((640, 480), 16)
+		else:
+			if RSD == 0:
+				stream_int = USB_ONBOARD_CAMERA_init(0)
+			else:
+				stream_int = rs.pipeline()
+				RS_D435_init(stream_int)
+	else:
+		stream_int = VIDEO_init('video_recorded/Color_2019-05-05 16:46:48.119218.avi')#'video_examples/3.mp4'
+
+	return stream_int
+
+def DNN_INIT():
+	if TPU == 0:
+		net, classes, colors = LOAD_CPU_CAFFE_MnetSSD()
+	else:
+		colors=0
+		net, classes = LOAD_TPU_TF_MnetSSD(4)
+	return net, classes, colors
+
+def TRACKER_INIT(ch):
+	# tracker
+	if (TRACKER):
+		if ch == "sort":
+			tracker_int = Sort()
+		if ch == "opencv":
+			tracker_int = cv2.TrackerCSRT_create()
+	else:
+		tracker_int = 0
+	return tracker_int
+
+def GET_FRAME(stream_int):
+	if (VIDEO == 0):
+		if RPI == 1:
+			frame_int = RPI_CAMERA_get(stream_int)
+		else:
+			if RSD == 0:
+				frame_int = USB_ONBOARD_CAMERA_get(stream_int)
+			else:
+				frame_int, depth_image, depth_frame = RS_D435_get(stream_int)
+	else:
+		frame_int = VIDEO_get(stream_int)
+	return frame_int
+
+def DNN_RUN_FORWARD(frame_int, net_int, classes_int, colors_int):
+	if TPU == 0:
+		frame_int, tracker_box_int = RUN_CPU_CAFFE_MnetSSD(frame_int, net_int, classes_int, colors_int)
+	else:
+		frame_int, tracker_box_int = RUN_TPU_TF_MnetSSD(frame_int, net_int, classes_int)
+
+	return frame_int, tracker_box_int
+
+def TRACKER_GO(tracker_int, tracker_box_int, frame_int, colors_int):
+	# tracker
+	if (TRACKER == 1):
+		frame_int = Tracker_sort(tracker_int, tracker_box_int, frame_int, colors_int)
+
+	if (TRACKER == 2):
+		N_tracked=0
+		if N_tracked < 5:
+			N_tracked = Tracker_opencv_init(tracker_int, frame_int, tracker_box_int, N_tracked)
+		else:
+			Trackers_opencv_update(tracker_int, frame_int)
+	return frame_int
+
 def MAIN():
 	width = 300
 	height = 300
@@ -340,52 +426,11 @@ def MAIN():
 	t1 = 0
 	t2 = 0
 
-	#coffe
-	net = 0
-	classes = 0
-	colors = 0
-	stream = 0
+	tracker = TRACKER_INIT("sort")#"opencv"
 
-	#TF
-	pipeline = 0
-	engine = 0
-	labels_tf = 0
+	stream = VIDEO_INIT()
 
-	#RS Depth
-	meters=0
-
-	#PIcamera
-	if(RPI != 0):
-		output = np.empty((480, 640, 3), dtype=np.uint8)
-
-	#tracker
-	if(TRACKER == 1):
-		mot_tracker = Sort()
-
-	if(TRACKER == 2):
-		tracker = cv2.TrackerCSRT_create()
-
-	tracker_box=0
-	N_tracked = 0
-
-	if(VIDEO == 0):
-		if RPI == 1:
-			stream = RPI_CAMERA_init((640, 480), 16)
-		else:
-			if RSD == 0:
-				stream = USB_ONBOARD_CAMERA_init(0)
-			else:
-				pipeline = rs.pipeline()
-				RS_D435_init(pipeline)
-	else:
-		stream = VIDEO_init('video_recorded/Color_2019-05-05 16:46:48.119218.avi')#'video_examples/3.mp4'
-
-	if TPU == 0:
-		net, classes, colors = LOAD_CPU_CAFFE_MnetSSD()
-	else:
-		engine=0
-		labels_tf = 0
-		engine, labels_tf = LOAD_TPU_TF_MnetSSD(4, engine, labels_tf)
+	net, classes, colors = DNN_INIT()
 
 	# loop over the frames from the video stream
 	while(True):
@@ -394,52 +439,24 @@ def MAIN():
 		fps, framecount, elapsedTime, t1, t2 = FPS_CHECK (1, fps, framecount, elapsedTime, t1, t2)
 
 		# Get image
-		if(VIDEO == 0):
-			if RPI == 1:
-				frame = RPI_CAMERA_get(stream, output)
-			else:
-				if RSD == 0:
-					frame = USB_ONBOARD_CAMERA_get(stream)
-				else:
-					frame, depth_image, depth_frame = RS_D435_get(pipeline)
-		else:
-			frame = VIDEO_get(stream)
-			if frame is None:
-				break
+		frame = GET_FRAME(stream)
 
 		#hold time
 		t11 = time.perf_counter()
 		print("t11", t11-t1)
 
 		#FORWARD NN RUN
-		if TPU == 0:
-			frame, tracker_box = RUN_CPU_CAFFE_MnetSSD(frame, net, classes, colors)
-		else:
-			frame, tracker_box = RUN_TPU_TF_MnetSSD(frame, engine, labels_tf)
+		frame, tracker_box = DNN_RUN_FORWARD(frame, net, classes, colors)
 
 		#hold time
 		t12 = time.perf_counter()
 		print("t12", t12-t11)
 
 		#tracker
-		if(TRACKER == 1):
-			frame = Tracker_sort(mot_tracker, tracker_box, frame, colors)
+		frame = TRACKER_GO(tracker, tracker_box, frame, colors)
 
-		if(TRACKER == 2):
-			if N_tracked < 5:
-				N_tracked = Tracker_opencv_init(tracker, frame, tracker_box, N_tracked)
-			else:
-				Trackers_opencv_update(tracker, frame)
-
-		if(1):#RSD
-			#Depth calculation
-			print("Boxes:", tracker_box)
-			if(tracker_box[0][0] != 0):
-				for i in range(tracker_box.shape[0]):
-					distance = (int(tracker_box[i][0] + ((tracker_box[i][2] - tracker_box[i][0]) / 2)), int(tracker_box[i][1] + (tracker_box[i][3] - tracker_box[i][1]) / 2))
-					meters = 10.5#depth_frame.as_depth_frame().get_distance(distance[0], distance[1])
-					cv2.putText(frame, " {:.2f}".format(meters)+" m", (distance[0], distance[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0, 255), 1)
-				print("Distance:", meters)
+		#Distance to objects calculation
+		frame = DEPTH_CALC(tracker_box, frame)
 
 		#hold time
 		t13 = time.perf_counter()
@@ -464,10 +481,7 @@ def MAIN():
 	# do a bit of cleanup
 	cv2.destroyAllWindows()
 	if(VIDEO == 0):
-		if (RSD == 0):
 			stream.stop()
-		else:
-			pipeline.stop()
 	else:
 		stream.release()
 
