@@ -6,6 +6,8 @@ import imutils
 import time
 import cv2
 import math
+import pyrealsense2 as rs
+
 
 # initialize a dictionary that maps strings to their corresponding
 # OpenCV object tracker implementations
@@ -19,15 +21,18 @@ OPENCV_OBJECT_TRACKERS = {
 	"mosse": cv2.TrackerMOSSE_create
 }
 
-
 RPI = 0
-RSD = 1
+RSD = 0
 TPU = 0
-VIDEO = 0
-DEPTH_VIDEO = 0
+VIDEO = 1
+DEPTH_VIDEO = 1
 TRACKER = 0
 
-import pyrealsense2 as rs
+accuracy = 0.3
+# depth
+depth_video_fps = 6
+depth_frame_time = 1/depth_video_fps
+depth_time_old=0
 
 if(TPU != 0):
 	from edgetpu.detection.engine import DetectionEngine
@@ -36,8 +41,6 @@ if(TPU != 0):
 if(RPI == 1):
 	from picamera.array import PiRGBArray
 	from picamera import PiCamera
-
-accuracy = 0.3
 
 if(TRACKER == 1):
 	from sort_master.sort import *
@@ -74,17 +77,28 @@ def RPI_CAMERA_get(stream_int):
 	stream_int.capture(output, 'rgb')
 	return output
 
-def VIDEO_init(file):
-	vs = cv2.VideoCapture(file)
+def VIDEO_init(file1, file2):
+	vs = cv2.VideoCapture(file1)
+
 	if (vs.isOpened() == False):
 		print("Error opening video stream or file")
-	time.sleep(0.5)
-	return vs
 
-def VIDEO_get(stream_int):
+	if DEPTH_VIDEO:
+		depth = cv2.VideoCapture(file2)
+		if (vs.isOpened() == False):
+			print("Error opening video stream or file")
+
+	time.sleep(0.5)
+	return vs, depth
+
+def VIDEO_get(stream_int, depth_stream_int):
 	ret, frame_int = stream_int.read()
 	#frame_int = imutils.resize(frame_int, width=400)
-	return frame_int
+	if DEPTH_VIDEO:
+		ret, fr = depth_stream_int.read()
+		depth_frame_int = fr[:,:,0]*256
+		print(depth_frame_int)
+	return frame_int, depth_frame_int
 
 def RS_D435_init(pipeline_int):
 	# Configure depth and color streams
@@ -110,7 +124,7 @@ def RS_D435_get(pipeline_int):
 	# dnn
 	#im = cv2.resize(color_image_int, (300, 300))
 	#im = im - 127.5
-	#im = im * 0.007843
+	#im = im * 0.007843q
 	#im.astype(np.float32)
 	return color_image_int, depth_image_int, depth_frame #if need im or color image???
 
@@ -335,21 +349,8 @@ def Trackers_opencv_update(tracker_int, frame_int):
 
 	return success_int
 
-def DEPTH_CALC(box_int, frame_int):
-	if RSD or DEPTH_VIDEO:
-		# Depth calculation
-		print("Boxes:", box_int)
-		if (box_int[0][0] != 0):
-			for i in range(box_int.shape[0]):
-				distance = (int(box_int[i][0] + ((box_int[i][2] - box_int[i][0]) / 2)),
-							int(box_int[i][1] + (box_int[i][3] - box_int[i][1]) / 2))
-				meters = 10.5  # depth_frame.as_depth_frame().get_distance(distance[0], distance[1])
-				cv2.putText(frame_int, " {:.2f}".format(meters) + " m", (distance[0], distance[1]),
-							cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 1)
-			print("Distance:", meters)
-	return frame_int
-
 def VIDEO_INIT():
+	depth_stream_int=0
 	if(VIDEO == 0):
 		if RPI == 1:
 			stream_int = RPI_CAMERA_init((640, 480), 16)
@@ -360,9 +361,10 @@ def VIDEO_INIT():
 				stream_int = rs.pipeline()
 				RS_D435_init(stream_int)
 	else:
-		stream_int = VIDEO_init('video_recorded/Color_2019-05-05 16:46:48.119218.avi')#'video_examples/3.mp4'
+		stream_int, depth_stream_int = VIDEO_init('video_recorded/Color_2019-05-05 16:50:26.827348.avi',
+												  'video_recorded/Depth_2019-05-05 16:50:26.827436.avi')#'video_examples/3.mp4'
 
-	return stream_int
+	return stream_int, depth_stream_int
 
 def DNN_INIT():
 	if TPU == 0:
@@ -383,7 +385,9 @@ def TRACKER_INIT(ch):
 		tracker_int = 0
 	return tracker_int
 
-def GET_FRAME(stream_int):
+def GET_FRAME(stream_int, depth_stream_int, depth_time_old_int):
+	depth_image = 0
+	depth_frame = 0
 	if (VIDEO == 0):
 		if RPI == 1:
 			frame_int = RPI_CAMERA_get(stream_int)
@@ -391,10 +395,14 @@ def GET_FRAME(stream_int):
 			if RSD == 0:
 				frame_int = USB_ONBOARD_CAMERA_get(stream_int)
 			else:
-				frame_int, depth_image, depth_frame = RS_D435_get(stream_int)
+				frame_int, depth_frame, depth_image = RS_D435_get(stream_int)
 	else:
-		frame_int = VIDEO_get(stream_int)
-	return frame_int
+		frame_int, depth_image = VIDEO_get(stream_int, depth_stream_int)
+		if DEPTH_VIDEO:
+			while time.perf_counter() < (depth_time_old_int + depth_frame_time):
+				a=1
+
+	return frame_int, depth_frame, depth_image
 
 def DNN_RUN_FORWARD(frame_int, net_int, classes_int, colors_int):
 	if TPU == 0:
@@ -417,6 +425,20 @@ def TRACKER_GO(tracker_int, tracker_box_int, frame_int, colors_int):
 			Trackers_opencv_update(tracker_int, frame_int)
 	return frame_int
 
+def DEPTH_CALC(box_int, frame_int, depth_frame_int):
+	if RSD or DEPTH_VIDEO:
+		# Depth calculation
+		print("Boxes:", box_int)
+		if (box_int[0][0] != 0):
+			for i in range(box_int.shape[0]):
+				distance = (int(box_int[i][0] + ((box_int[i][2] - box_int[i][0]) / 2)),
+							int(box_int[i][1] + (box_int[i][3] - box_int[i][1]) / 2))
+				meters = depth_frame_int.as_depth_frame().get_distance(distance[0], distance[1])
+				cv2.putText(frame_int, " {:.2f}".format(meters) + " m", (distance[0], distance[1]),
+							cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 1)
+			print("Distance:", meters)
+	return frame_int
+
 def MAIN():
 	width = 300
 	height = 300
@@ -426,11 +448,14 @@ def MAIN():
 	t1 = 0
 	t2 = 0
 
+
 	tracker = TRACKER_INIT("sort")#"opencv"
 
-	stream = VIDEO_INIT()
+	stream, depth_stream = VIDEO_INIT()
 
 	net, classes, colors = DNN_INIT()
+
+	depth_time_old = time.perf_counter()
 
 	# loop over the frames from the video stream
 	while(True):
@@ -439,28 +464,35 @@ def MAIN():
 		fps, framecount, elapsedTime, t1, t2 = FPS_CHECK (1, fps, framecount, elapsedTime, t1, t2)
 
 		# Get image
-		frame = GET_FRAME(stream)
+		frame, depth_frame, depth_image = GET_FRAME(stream, depth_stream, depth_time_old)
+
+		#depth framerate
+		depth_time_old = time.perf_counter()
 
 		#hold time
 		t11 = time.perf_counter()
-		print("t11", t11-t1)
+		print("get image", " {:.4f}".format(t11-t1))
 
 		#FORWARD NN RUN
 		frame, tracker_box = DNN_RUN_FORWARD(frame, net, classes, colors)
 
 		#hold time
 		t12 = time.perf_counter()
-		print("t12", t12-t11)
+		print("forward NN", " {:.4f}".format(t12-t11))
 
 		#tracker
 		frame = TRACKER_GO(tracker, tracker_box, frame, colors)
 
-		#Distance to objects calculation
-		frame = DEPTH_CALC(tracker_box, frame)
-
 		#hold time
 		t13 = time.perf_counter()
-		print("t13", t13-t12)
+		print("tracker", " {:.4f}".format(t13-t12))
+
+		#Distance to objects calculation
+		#frame = DEPTH_CALC(tracker_box, frame, depth_image)
+
+		#hold time
+		t14 = time.perf_counter()
+		print("depth calc", " {:.4f}".format(t14-t13))
 
 		#add text and show image on the screen
 		FRAME_SHOW(frame, fps)
@@ -470,8 +502,8 @@ def MAIN():
 			break
 
 		#hold time
-		t14 = time.perf_counter()
-		print("t14", t14-t13)
+		t15 = time.perf_counter()
+		print("frame show", " {:.4f}".format(t15-t14))
 
 		print("FPS:", fps)
 
