@@ -22,10 +22,10 @@ OPENCV_OBJECT_TRACKERS = {
 }
 
 RPI = 0
-RSD = 0
+RSD = 1
 TPU = 0
-VIDEO = 1
-DEPTH_VIDEO = 1
+VIDEO = 0
+DEPTH_VIDEO = 0
 TRACKER = 0
 
 accuracy = 0.3
@@ -87,17 +87,22 @@ def VIDEO_init(file1, file2):
 		depth = cv2.VideoCapture(file2)
 		if (vs.isOpened() == False):
 			print("Error opening video stream or file")
-
+	else:
+		depth = 0
 	time.sleep(0.5)
 	return vs, depth
 
 def VIDEO_get(stream_int, depth_stream_int):
 	ret, frame_int = stream_int.read()
 	#frame_int = imutils.resize(frame_int, width=400)
+
 	if DEPTH_VIDEO:
-		ret, fr = depth_stream_int.read()
-		depth_frame_int = fr[:,:,0]*256
+		ret, d_fr = depth_stream_int.read()
+		depth_frame_int = d_fr[:,:,0]#/255.0
+		#depth_frame_int = depth_frame_int.as_depth_frame()
 		print(depth_frame_int)
+	else:
+		depth_frame_int = 0
 	return frame_int, depth_frame_int
 
 def RS_D435_init(pipeline_int):
@@ -116,7 +121,7 @@ def RS_D435_get(pipeline_int):
 	color_frame = frames.get_color_frame()
 	if not depth_frame or not color_frame:
 		return (0,0,0), (0,0,0), (0,0,0)
-
+	print(depth_frame)
 	# Convert images to numpy arrays
 	depth_image_int = np.asanyarray(depth_frame.get_data())
 	color_image_int = np.asanyarray(color_frame.get_data())
@@ -398,7 +403,7 @@ def GET_FRAME(stream_int, depth_stream_int, depth_time_old_int):
 				frame_int, depth_frame, depth_image = RS_D435_get(stream_int)
 	else:
 		frame_int, depth_image = VIDEO_get(stream_int, depth_stream_int)
-		if DEPTH_VIDEO:
+		if DEPTH_VIDEO or VIDEO :
 			while time.perf_counter() < (depth_time_old_int + depth_frame_time):
 				a=1
 
@@ -428,15 +433,25 @@ def TRACKER_GO(tracker_int, tracker_box_int, frame_int, colors_int):
 def DEPTH_CALC(box_int, frame_int, depth_frame_int):
 	if RSD or DEPTH_VIDEO:
 		# Depth calculation
-		print("Boxes:", box_int)
+		#print("Boxes:", box_int)
 		if (box_int[0][0] != 0):
 			for i in range(box_int.shape[0]):
-				distance = (int(box_int[i][0] + ((box_int[i][2] - box_int[i][0]) / 2)),
-							int(box_int[i][1] + (box_int[i][3] - box_int[i][1]) / 2))
-				meters = depth_frame_int.as_depth_frame().get_distance(distance[0], distance[1])
-				cv2.putText(frame_int, " {:.2f}".format(meters) + " m", (distance[0], distance[1]),
-							cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 1)
-			print("Distance:", meters)
+				coordinates = np.zeros((6,2), dtype=int)
+				distance = np.zeros(6)
+				i_dist=0
+				for k in range(-1,3,2):
+					for j in range(-1,2,1):
+						coordinates[i_dist][0] = int((box_int[i][0] + (box_int[i][2] - box_int[i][0]) / 2)-50*j)
+						coordinates[i_dist][1] = int((box_int[i][1] + (box_int[i][3] - box_int[i][1]) / 2)-50*k*j)
+						distance[i_dist] = depth_frame_int.as_depth_frame().get_distance(coordinates[i_dist][0], coordinates[i_dist][1])
+						if distance[i_dist] == 0:
+							distance[i_dist] = 100
+						i_dist += 1
+				min_dist = np.amin(distance)
+				if min_dist == 0:#CHECK WHEN DISTANCE < 30 cm!!!!!!!
+					print("MIN_DIST", distance)
+				cv2.putText(frame_int, " {:.2f}".format(min_dist) + " m", (coordinates[1][0], coordinates[1][1]),
+							cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1)
 	return frame_int
 
 def MAIN():
@@ -447,7 +462,6 @@ def MAIN():
 	elapsedTime = 0
 	t1 = 0
 	t2 = 0
-
 
 	tracker = TRACKER_INIT("sort")#"opencv"
 
@@ -488,7 +502,7 @@ def MAIN():
 		print("tracker", " {:.4f}".format(t13-t12))
 
 		#Distance to objects calculation
-		#frame = DEPTH_CALC(tracker_box, frame, depth_image)
+		frame = DEPTH_CALC(tracker_box, frame, depth_image)
 
 		#hold time
 		t14 = time.perf_counter()
@@ -512,9 +526,11 @@ def MAIN():
 
 	# do a bit of cleanup
 	cv2.destroyAllWindows()
-	if(VIDEO == 0):
-			stream.stop()
-	else:
+	if(VIDEO == 1):
 		stream.release()
+	if RSD:
+		stream.terminate()
+	else:
+		stream.stop()
 
 MAIN()
